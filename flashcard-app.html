@@ -765,27 +765,45 @@ async function runDiag() {
   const projectId = cfg ? (cfg.projectId || '不明') : '未設定';
   let firestoreCount = '?';
   let firestoreStatus = '';
+  let snap = null;
+  let dataSource = '';
   try {
-    // サーバーから強制的に読み取る（キャッシュを使わない）
-    const snap = await fbStore.collection(`users/${userId}/decks`).get({ source: 'server' });
+    snap = await fbStore.collection(`users/${userId}/decks`).get({ source: 'server' });
+    dataSource = 'サーバー直接読み取り';
+    firestoreStatus = `✅ 接続OK（${dataSource}）`;
+  } catch(e) {
+    console.warn('[FC] Diag server fetch failed:', e.code, e.message);
+    if (e.code === 'permission-denied') {
+      firestoreStatus = '❌ 権限エラー（Firestoreルール要更新）';
+    } else {
+      // フォールバック
+      try {
+        snap = await fbStore.collection(`users/${userId}/decks`).get();
+        dataSource = snap.metadata.fromCache ? 'キャッシュ（サーバー接続不可）' : 'サーバー';
+        firestoreStatus = snap.metadata.fromCache
+          ? `⚠️ オフライン（${dataSource}）`
+          : `✅ 接続OK（${dataSource}）`;
+      } catch(e2) {
+        firestoreStatus = '❌ ' + (e2.code === 'permission-denied' ? '権限エラー（Firestoreルール要更新）' : e2.message);
+      }
+    }
+  }
+  if (snap) {
     firestoreCount = snap.docs.length;
     const deckNames = snap.docs.map(d => d.data().name || '(名前なし)').join(', ') || '（なし）';
-    firestoreStatus = `✅ 接続OK（サーバー直接読み取り）`;
     box.innerHTML =
       `📦 Firebaseプロジェクト：<strong>${projectId}</strong><br>` +
       `🔑 共有ID：<strong>${userId}</strong><br>` +
       `📂 Firestoreのパス：<strong>users/${userId}/decks</strong><br>` +
-      `🗂 デッキ数（サーバー）：<strong>${firestoreCount}件</strong><br>` +
+      `🗂 デッキ数：<strong>${firestoreCount}件</strong>（${dataSource}）<br>` +
       `📋 デッキ名：${deckNames}<br>` +
       `🔗 接続状態：<strong>${firestoreStatus}</strong>`;
-    return;
-  } catch(e) {
-    firestoreStatus = '❌ ' + (e.code === 'permission-denied' ? '権限エラー（Firestoreルール要更新）' : e.message);
+  } else {
+    box.innerHTML =
+      `📦 Firebaseプロジェクト：<strong>${projectId}</strong><br>` +
+      `🔑 共有ID：<strong>${userId}</strong><br>` +
+      `🔗 接続状態：<strong>${firestoreStatus}</strong>`;
   }
-  box.innerHTML =
-    `📦 Firebaseプロジェクト：<strong>${projectId}</strong><br>` +
-    `🔑 共有ID：<strong>${userId}</strong><br>` +
-    `🔗 接続状態：<strong>${firestoreStatus}</strong>`;
 }
 function closeSetupModal() { document.getElementById('setupModal').classList.remove('open'); }
 function copyUserId() {
@@ -849,26 +867,53 @@ async function subscribeDecks() {
 
   const col = fbStore.collection(`users/${userId}/decks`).orderBy('createdAt', 'asc');
 
-  // ── Step1: サーバーから強制読み取り（キャッシュを完全に無視）──
+  // ── Step1: サーバーから読み取り（フォールバック付き）──
+  let initialLoaded = false;
   try {
+    // まずサーバーから直接取得を試みる
     const snap = await col.get({ source: 'server' });
     db_local.decks = parseDeckDocs(snap.docs);
-    renderDeckGrid();
-    if (currentDeckId && document.getElementById('deckPage').classList.contains('active')) renderDeckDetail();
-    setSyncing(false);
-    hideLoading();
-    if (!document.querySelector('.page.active:not(#setupPage)')) showPage('deckListPage');
+    initialLoaded = true;
   } catch(e) {
-    console.error('[FC] Initial fetch error:', e.code, e.message);
-    setSyncing(false);
-    hideLoading();
-    if (e.code === 'permission-denied') { showFirestorePermissionError(); return; }
-    showToast('読み込みエラー: ' + (e.message || e.code));
+    console.warn('[FC] Server fetch failed, trying default...', e.code, e.message);
+    if (e.code === 'permission-denied') {
+      setSyncing(false); hideLoading();
+      showFirestorePermissionError(); return;
+    }
+    // サーバー取得失敗 → 通常のget()にフォールバック（キャッシュ含む）
+    try {
+      const snap = await col.get();
+      db_local.decks = parseDeckDocs(snap.docs);
+      initialLoaded = true;
+      const fromCache = snap.metadata.fromCache;
+      if (fromCache) {
+        showToast('⚠️ オフラインデータを表示中（サーバーに接続できません）');
+      }
+    } catch(e2) {
+      console.error('[FC] Fallback fetch also failed:', e2.code, e2.message);
+      if (e2.code === 'permission-denied') {
+        setSyncing(false); hideLoading();
+        showFirestorePermissionError(); return;
+      }
+    }
   }
 
-  // ── Step2: リアルタイム更新のみ onSnapshot で受け取る ──
+  if (initialLoaded) {
+    renderDeckGrid();
+    if (currentDeckId && document.getElementById('deckPage').classList.contains('active')) renderDeckDetail();
+  }
+  setSyncing(false);
+  hideLoading();
+  if (!document.querySelector('.page.active:not(#setupPage)')) showPage('deckListPage');
+
+  if (!initialLoaded) {
+    showToast('読み込みエラー: サーバーに接続できません。ネットワーク接続とFirebaseの設定を確認してください。');
+  }
+
+  // ── Step2: リアルタイム更新を onSnapshot で受け取る ──
   unsubDecks = col.onSnapshot(snapshot => {
-    if (snapshot.metadata.fromCache) return; // キャッシュ由来は無視
+    // サーバー由来の更新のみ反映（キャッシュ由来はStep1で取得済み）
+    if (snapshot.metadata.fromCache && initialLoaded) return;
     db_local.decks = parseDeckDocs(snapshot.docs);
     renderDeckGrid();
     if (currentDeckId && document.getElementById('deckPage').classList.contains('active')) renderDeckDetail();
