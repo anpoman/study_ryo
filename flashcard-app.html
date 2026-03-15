@@ -645,7 +645,7 @@ function initFirebase(config) {
       fbApp = firebase.initializeApp(config);
     }
     fbStore = firebase.firestore();
-    fbStore.enablePersistence().catch(() => {});
+    // オフラインキャッシュは無効化（デバイス間でデータが食い違う原因になるため）
     return true;
   } catch(e) { console.error(e); return false; }
 }
@@ -724,16 +724,25 @@ async function runDiag() {
   let firestoreCount = '?';
   let firestoreStatus = '';
   try {
-    const snap = await fbStore.collection(`users/${userId}/decks`).get();
+    // サーバーから強制的に読み取る（キャッシュを使わない）
+    const snap = await fbStore.collection(`users/${userId}/decks`).get({ source: 'server' });
     firestoreCount = snap.docs.length;
-    firestoreStatus = '✅ 接続OK';
+    const deckNames = snap.docs.map(d => d.data().name || '(名前なし)').join(', ') || '（なし）';
+    firestoreStatus = `✅ 接続OK（サーバー直接読み取り）`;
+    box.innerHTML =
+      `📦 Firebaseプロジェクト：<strong>${projectId}</strong><br>` +
+      `🔑 共有ID：<strong>${userId}</strong><br>` +
+      `📂 Firestoreのパス：<strong>users/${userId}/decks</strong><br>` +
+      `🗂 デッキ数（サーバー）：<strong>${firestoreCount}件</strong><br>` +
+      `📋 デッキ名：${deckNames}<br>` +
+      `🔗 接続状態：<strong>${firestoreStatus}</strong>`;
+    return;
   } catch(e) {
-    firestoreStatus = '❌ ' + (e.code === 'permission-denied' ? '権限エラー（ルール要更新）' : e.message);
+    firestoreStatus = '❌ ' + (e.code === 'permission-denied' ? '権限エラー（Firestoreルール要更新）' : e.message);
   }
   box.innerHTML =
     `📦 Firebaseプロジェクト：<strong>${projectId}</strong><br>` +
     `🔑 共有ID：<strong>${userId}</strong><br>` +
-    `📂 Firestoreのデッキ数：<strong>${firestoreCount}件</strong><br>` +
     `🔗 接続状態：<strong>${firestoreStatus}</strong>`;
 }
 function closeSetupModal() { document.getElementById('setupModal').classList.remove('open'); }
@@ -788,8 +797,13 @@ function subscribeDecks() {
   unsubDecks = fbStore
     .collection(`users/${userId}/decks`)
     .orderBy('createdAt', 'asc')
-    .onSnapshot(snapshot => {
-      console.log('[FC] Snapshot received:', snapshot.docs.length, 'decks');
+    .onSnapshot({ includeMetadataChanges: true }, snapshot => {
+      // キャッシュからのデータは無視（サーバーからのデータのみ使用）
+      if (snapshot.metadata.fromCache) {
+        console.log('[FC] Snapshot from cache, skipping...');
+        return;
+      }
+      console.log('[FC] Snapshot received from server:', snapshot.docs.length, 'decks');
       db_local.decks = snapshot.docs.map(doc => {
         const d = doc.data();
         return {
