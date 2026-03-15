@@ -1291,6 +1291,11 @@ function setSpeakBtnState(speaking) {
 }
 
 // テキストを読み上げる（side: 'front' | 'back'）
+function detectLang(text) {
+  // 日本語文字（ひらがな・カタカナ・漢字）が含まれていれば日本語、なければ英語
+  return /[\u3040-\u30FF\u4E00-\u9FFF]/.test(text) ? 'ja' : 'en';
+}
+
 function speakText(side) {
   if (!window.speechSynthesis) return;
   const card = studyCards[studyIndex];
@@ -1300,14 +1305,24 @@ function speakText(side) {
   window.speechSynthesis.cancel();
 
   const utter = new SpeechSynthesisUtterance(text);
-  utter.lang  = 'ja-JP';
   utter.rate  = ttsRate;
   utter.pitch = 1.0;
 
   const voices = window.speechSynthesis.getVoices();
-  const jaVoice = voices.find(v => v.lang === 'ja-JP' || v.lang === 'ja') ||
+  const lang = detectLang(text);
+
+  if (lang === 'ja') {
+    utter.lang = 'ja-JP';
+    const voice = voices.find(v => v.lang === 'ja-JP' || v.lang === 'ja') ||
                   voices.find(v => v.lang.startsWith('ja'));
-  if (jaVoice) utter.voice = jaVoice;
+    if (voice) utter.voice = voice;
+  } else {
+    utter.lang = 'en-US';
+    const voice = voices.find(v => v.lang === 'en-US') ||
+                  voices.find(v => v.lang === 'en-GB') ||
+                  voices.find(v => v.lang.startsWith('en'));
+    if (voice) utter.voice = voice;
+  }
 
   ttsSide = side;
   utter.onstart = () => { ttsActive = true;  setSpeakBtnState(true); };
@@ -1531,17 +1546,35 @@ function processCsvFile(file) {
   reader.readAsText(file, 'UTF-8');
 }
 
+function detectDelimiter(text) {
+  // 最初の数行からデリミタを自動検出（セミコロン・カンマ・タブ）
+  const sample = text.split(/\r?\n/).slice(0, 5).join('\n');
+  const counts = { ';': 0, ',': 0, '\t': 0 };
+  let inQ = false;
+  for (const c of sample) {
+    if (c === '"') { inQ = !inQ; continue; }
+    if (!inQ && counts[c] !== undefined) counts[c]++;
+  }
+  if (counts[';'] >= counts[','] && counts[';'] >= counts['\t']) return ';';
+  if (counts['\t'] >= counts[',']) return '\t';
+  return ',';
+}
+
 function parseCsv(text) {
   text = text.replace(/^\uFEFF/,'');
   const cards = [];
   const lines = text.split(/\r?\n/).filter(l=>l.trim());
+  const delim = detectDelimiter(text);
   lines.forEach((line, i) => {
-    const cols = parseCsvLine(line);
+    const cols = parseCsvLine(line, delim);
     if (cols.length < 2) return;
     const front = cols[0].trim(), back = cols[1].trim();
     if (!front || !back) return;
     // ヘッダー行をスキップ
-    if (i===0) { const fl=front.toLowerCase(); if (fl==='front'||fl==='表'||fl==='問題'||fl==='question'||fl==='term') return; }
+    if (i===0) {
+      const fl = front.toLowerCase();
+      if (fl==='front'||fl==='表'||fl==='問題'||fl==='question'||fl==='term'||fl==='表（問題）'||fl==='表(問題)') return;
+    }
     // 学習履歴列（3列目以降）があれば読み込む
     const correct   = cols.length > 2 ? (parseInt(cols[2].trim(), 10) || 0) : 0;
     const incorrect = cols.length > 3 ? (parseInt(cols[3].trim(), 10) || 0) : 0;
@@ -1551,12 +1584,13 @@ function parseCsv(text) {
   return cards;
 }
 
-function parseCsvLine(line) {
+function parseCsvLine(line, delim) {
+  if (!delim) delim = ',';
   const cols=[]; let cur='', inQ=false;
   for (let i=0; i<line.length; i++) {
     const c=line[i];
     if (c==='"') { if (inQ&&line[i+1]==='"'){cur+='"';i++;} else inQ=!inQ; }
-    else if ((c===','||c==='\t')&&!inQ) { cols.push(cur); cur=''; }
+    else if (c===delim&&!inQ) { cols.push(cur); cur=''; }
     else cur+=c;
   }
   cols.push(cur); return cols;
