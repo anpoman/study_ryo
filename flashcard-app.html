@@ -826,54 +826,56 @@ function saveConfigModal() {
 // ══════════════════════════════════════════
 //  Firestore Sync
 // ══════════════════════════════════════════
-function subscribeDecks() {
+function parseDeckDocs(docs) {
+  return docs.map(doc => {
+    const d = doc.data();
+    return {
+      id: doc.id, name: d.name, icon: d.icon || '📚',
+      cards: (d.cards || []).map(c => ({
+        id: c.id, front: c.front, back: c.back,
+        learned: c.learned || false, correct: c.correct || 0, incorrect: c.incorrect || 0
+      }))
+    };
+  });
+}
+
+async function subscribeDecks() {
   if (unsubDecks) { unsubDecks(); unsubDecks = null; }
-  // ID変更時に古いデータをクリア
   db_local.decks = [];
   renderDeckGrid();
-  // IDバナーを更新
   const disp = document.getElementById('userIdDisplay');
   if (disp) disp.textContent = userId;
   setSyncing(true);
-  console.log('[FC] Subscribing to path: users/' + userId + '/decks');
-  unsubDecks = fbStore
-    .collection(`users/${userId}/decks`)
-    .orderBy('createdAt', 'asc')
-    .onSnapshot({ includeMetadataChanges: true }, snapshot => {
-      // キャッシュからのデータは画面更新に使わない（ローディングは解除する）
-      if (snapshot.metadata.fromCache) {
-        console.log('[FC] Snapshot from cache, skipping data update...');
-        hideLoading();
-        setSyncing(false);
-        if (!document.querySelector('.page.active:not(#setupPage)')) showPage('deckListPage');
-        return;
-      }
-      console.log('[FC] Snapshot received from server:', snapshot.docs.length, 'decks');
-      db_local.decks = snapshot.docs.map(doc => {
-        const d = doc.data();
-        return {
-          id: doc.id, name: d.name, icon: d.icon || '📚',
-          cards: (d.cards || []).map(c => ({
-            id: c.id, front: c.front, back: c.back,
-            learned: c.learned || false, correct: c.correct || 0, incorrect: c.incorrect || 0
-          }))
-        };
-      });
-      renderDeckGrid();
-      if (currentDeckId && document.getElementById('deckPage').classList.contains('active')) renderDeckDetail();
-      setSyncing(false);
-      hideLoading();
-      if (!document.querySelector('.page.active:not(#setupPage)')) showPage('deckListPage');
-    }, err => {
-      console.error('[FC] Firestore error:', err.code, err.message);
-      setSyncing(false);
-      hideLoading();
-      if (err.code === 'permission-denied') {
-        showFirestorePermissionError();
-      } else {
-        showToast('同期エラー: ' + (err.message || err.code));
-      }
-    });
+
+  const col = fbStore.collection(`users/${userId}/decks`).orderBy('createdAt', 'asc');
+
+  // ── Step1: サーバーから強制読み取り（キャッシュを完全に無視）──
+  try {
+    const snap = await col.get({ source: 'server' });
+    db_local.decks = parseDeckDocs(snap.docs);
+    renderDeckGrid();
+    if (currentDeckId && document.getElementById('deckPage').classList.contains('active')) renderDeckDetail();
+    setSyncing(false);
+    hideLoading();
+    if (!document.querySelector('.page.active:not(#setupPage)')) showPage('deckListPage');
+  } catch(e) {
+    console.error('[FC] Initial fetch error:', e.code, e.message);
+    setSyncing(false);
+    hideLoading();
+    if (e.code === 'permission-denied') { showFirestorePermissionError(); return; }
+    showToast('読み込みエラー: ' + (e.message || e.code));
+  }
+
+  // ── Step2: リアルタイム更新のみ onSnapshot で受け取る ──
+  unsubDecks = col.onSnapshot(snapshot => {
+    if (snapshot.metadata.fromCache) return; // キャッシュ由来は無視
+    db_local.decks = parseDeckDocs(snapshot.docs);
+    renderDeckGrid();
+    if (currentDeckId && document.getElementById('deckPage').classList.contains('active')) renderDeckDetail();
+  }, err => {
+    console.error('[FC] Realtime error:', err.code, err.message);
+    if (err.code === 'permission-denied') showFirestorePermissionError();
+  });
 }
 
 function showFirestorePermissionError() {
@@ -1254,13 +1256,19 @@ function processCsvFile(file) {
 function parseCsv(text) {
   text = text.replace(/^\uFEFF/,'');
   const cards = [];
-  text.split(/\r?\n/).filter(l=>l.trim()).forEach((line, i) => {
+  const lines = text.split(/\r?\n/).filter(l=>l.trim());
+  lines.forEach((line, i) => {
     const cols = parseCsvLine(line);
     if (cols.length < 2) return;
     const front = cols[0].trim(), back = cols[1].trim();
     if (!front || !back) return;
+    // ヘッダー行をスキップ
     if (i===0) { const fl=front.toLowerCase(); if (fl==='front'||fl==='表'||fl==='問題'||fl==='question'||fl==='term') return; }
-    cards.push({front, back});
+    // 学習履歴列（3列目以降）があれば読み込む
+    const correct   = cols.length > 2 ? (parseInt(cols[2].trim(), 10) || 0) : 0;
+    const incorrect = cols.length > 3 ? (parseInt(cols[3].trim(), 10) || 0) : 0;
+    const learned   = cols.length > 4 ? (cols[4].trim() === '1') : false;
+    cards.push({front, back, correct, incorrect, learned});
   });
   return cards;
 }
@@ -1300,7 +1308,7 @@ async function importCsvCards() {
   if (!parsedCsvCards.length) return;
   const deck = getDeck(currentDeckId);
   const mode = document.querySelector('input[name="importMode"]:checked').value;
-  const newCards = parsedCsvCards.map(c=>({id:genId(),front:c.front,back:c.back,correct:0,incorrect:0,learned:false}));
+  const newCards = parsedCsvCards.map(c=>({id:genId(),front:c.front,back:c.back,correct:c.correct||0,incorrect:c.incorrect||0,learned:c.learned||false}));
   deck.cards = mode==='replace' ? newCards : [...deck.cards, ...newCards];
   const count = parsedCsvCards.length;
   closeCsvModal();
@@ -1319,11 +1327,11 @@ function downloadSampleCsv() {
 function exportDeckCsv() {
   const deck = getDeck(currentDeckId);
   if (!deck) return;
-  const rows = [['表（問題）', '裏（答え）']];
+  const rows = [['表（問題）', '裏（答え）', '正解回数', '不正解回数', '覚えた']];
   deck.cards.forEach(c => {
     const front = String(c.front).replace(/"/g, '""');
     const back  = String(c.back).replace(/"/g, '""');
-    rows.push([`"${front}"`, `"${back}"`]);
+    rows.push([`"${front}"`, `"${back}"`, c.correct || 0, c.incorrect || 0, c.learned ? '1' : '0']);
   });
   const csv = '\uFEFF' + rows.map(r => r.join(',')).join('\r\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
@@ -1407,7 +1415,7 @@ async function createDeckFromCsv() {
   if (!name) { showToast('デッキ名を入力してください'); return; }
   if (!ndcParsedCards.length) { showToast('CSVファイルを選択してください'); return; }
   const id = genId();
-  const cards = ndcParsedCards.map(c => ({id: genId(), front: c.front, back: c.back, correct:0, incorrect:0, learned:false}));
+  const cards = ndcParsedCards.map(c => ({id: genId(), front: c.front, back: c.back, correct:c.correct||0, incorrect:c.incorrect||0, learned:c.learned||false}));
   const newDeck = { id, name, icon: ndcSelectedEmoji, cards };
   db_local.decks.push(newDeck);
   closeNewDeckCsvModal();
