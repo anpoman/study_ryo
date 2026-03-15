@@ -424,7 +424,10 @@ const firebaseConfig = {
   </div>
   <div style="margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
     <p class="section-title" style="margin-bottom:0;">デッキ一覧</p>
-    <button class="add-btn" onclick="openDeckModal()">＋ デッキを追加</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="add-btn secondary" onclick="openNewDeckCsvModal()">📂 CSVから作成</button>
+      <button class="add-btn" onclick="openDeckModal()">＋ デッキを追加</button>
+    </div>
   </div>
   <div class="deck-grid" id="deckGrid"></div>
   <div class="empty" id="deckEmpty" style="display:none;">
@@ -439,7 +442,8 @@ const firebaseConfig = {
   <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
     <p class="section-title">カード一覧</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <button class="add-btn secondary" onclick="openCsvModal()" title="CSVからインポート">📂 CSV</button>
+      <button class="add-btn secondary" onclick="exportDeckCsv()" title="CSVでダウンロード">⬇️ CSV</button>
+      <button class="add-btn secondary" onclick="openCsvModal()" title="CSVからインポート">📂 CSV追加</button>
       <button class="add-btn secondary" onclick="openCardModal()">＋ カード追加</button>
     </div>
   </div>
@@ -563,6 +567,44 @@ const firebaseConfig = {
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeCsvModal()">キャンセル</button>
       <button class="btn btn-primary" id="csvImportBtn" onclick="importCsvCards()" style="display:none;">インポート</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── New Deck from CSV Modal ── -->
+<div class="modal-overlay" id="newDeckCsvModal">
+  <div class="modal" style="max-width:500px;">
+    <h2>📂 CSVからデッキを作成</h2>
+    <div id="ndcStep1">
+      <div class="form-group">
+        <label>デッキ名</label>
+        <input type="text" id="ndcDeckName" placeholder="例：英単語・日本史" maxlength="30">
+      </div>
+      <div class="form-group">
+        <label>アイコン</label>
+        <div class="emoji-picker" id="ndcEmojiPicker"></div>
+      </div>
+      <div class="csv-drop-zone" id="ndcDropZone"
+           onclick="document.getElementById('ndcFileInput').click()"
+           ondragover="event.preventDefault();this.classList.add('dragover')"
+           ondragleave="this.classList.remove('dragover')"
+           ondrop="handleNdcDrop(event)">
+        <div class="csv-drop-icon">📄</div>
+        <div class="csv-drop-text">CSVをドロップ、またはクリックして選択</div>
+        <div class="csv-drop-sub">1列目：表（問題）　2列目：裏（答え）</div>
+      </div>
+      <input type="file" id="ndcFileInput" accept=".csv,.tsv" style="display:none" onchange="handleNdcFile(event)">
+      <span class="sample-link" onclick="downloadSampleCsv()">⬇ サンプルCSVをダウンロード</span>
+    </div>
+    <div id="ndcStep2" style="display:none;">
+      <p style="font-size:0.88rem;margin-bottom:10px;">
+        <strong style="color:var(--primary);font-size:1.05rem;" id="ndcCount"></strong>のカードが見つかりました
+      </p>
+      <div id="ndcPreview"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeNewDeckCsvModal()">キャンセル</button>
+      <button class="btn btn-primary" id="ndcCreateBtn" onclick="createDeckFromCsv()" style="display:none;">デッキを作成</button>
     </div>
   </div>
 </div>
@@ -1273,6 +1315,107 @@ function downloadSampleCsv() {
   a.click(); URL.revokeObjectURL(a.href);
 }
 
+// ── CSV Export ──
+function exportDeckCsv() {
+  const deck = getDeck(currentDeckId);
+  if (!deck) return;
+  const rows = [['表（問題）', '裏（答え）']];
+  deck.cards.forEach(c => {
+    const front = String(c.front).replace(/"/g, '""');
+    const back  = String(c.back).replace(/"/g, '""');
+    rows.push([`"${front}"`, `"${back}"`]);
+  });
+  const csv = '\uFEFF' + rows.map(r => r.join(',')).join('\r\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const safeName = deck.name.replace(/[\\/:*?"<>|]/g, '_');
+  const a = Object.assign(document.createElement('a'), {href:URL.createObjectURL(blob), download: safeName + '.csv'});
+  a.click(); URL.revokeObjectURL(a.href);
+  showToast(`⬇️ ${deck.cards.length}枚をCSVでダウンロードしました`);
+}
+
+// ── New Deck from CSV ──
+let ndcSelectedEmoji = '📚';
+let ndcParsedCards = [];
+
+function openNewDeckCsvModal() {
+  ndcParsedCards = [];
+  ndcSelectedEmoji = EMOJIS[0];
+  document.getElementById('ndcDeckName').value = '';
+  document.getElementById('ndcStep1').style.display = 'block';
+  document.getElementById('ndcStep2').style.display = 'none';
+  document.getElementById('ndcCreateBtn').style.display = 'none';
+  document.getElementById('ndcFileInput').value = '';
+  // アイコンピッカー構築
+  const picker = document.getElementById('ndcEmojiPicker');
+  picker.innerHTML = '';
+  EMOJIS.forEach(e => {
+    const el = document.createElement('div');
+    el.className = 'emoji-opt' + (e === ndcSelectedEmoji ? ' selected' : '');
+    el.textContent = e;
+    el.onclick = () => {
+      picker.querySelectorAll('.emoji-opt').forEach(x => x.classList.remove('selected'));
+      el.classList.add('selected');
+      ndcSelectedEmoji = e;
+    };
+    picker.appendChild(el);
+  });
+  document.getElementById('newDeckCsvModal').classList.add('open');
+}
+
+function closeNewDeckCsvModal() {
+  document.getElementById('newDeckCsvModal').classList.remove('open');
+  ndcParsedCards = [];
+}
+
+function handleNdcFile(e) { if (e.target.files[0]) processNdcFile(e.target.files[0]); }
+function handleNdcDrop(e) {
+  e.preventDefault();
+  document.getElementById('ndcDropZone').classList.remove('dragover');
+  if (e.dataTransfer.files[0]) processNdcFile(e.dataTransfer.files[0]);
+}
+
+function processNdcFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    ndcParsedCards = parseCsv(e.target.result);
+    if (!ndcParsedCards.length) { showToast('有効なデータが見つかりませんでした'); return; }
+    document.getElementById('ndcCount').textContent = ndcParsedCards.length + '枚';
+    const sample = ndcParsedCards.slice(0, 5);
+    document.getElementById('ndcPreview').innerHTML = `
+      <div class="csv-preview-wrap">
+        <table class="csv-preview-table">
+          <thead><tr><th>表（問題）</th><th>裏（答え）</th></tr></thead>
+          <tbody>
+            ${sample.map(c => `<tr><td>${escHtml(c.front)}</td><td>${escHtml(c.back)}</td></tr>`).join('')}
+            ${ndcParsedCards.length > sample.length ? `<tr><td colspan="2" style="color:var(--sub);text-align:center;font-style:italic;">…他 ${ndcParsedCards.length - sample.length} 件</td></tr>` : ''}
+          </tbody>
+        </table>
+      </div>`;
+    // ファイル名からデッキ名を自動設定（空欄の場合）
+    if (!document.getElementById('ndcDeckName').value.trim()) {
+      const name = file.name.replace(/\.(csv|tsv)$/i, '');
+      document.getElementById('ndcDeckName').value = name.slice(0, 30);
+    }
+    document.getElementById('ndcStep2').style.display = 'block';
+    document.getElementById('ndcCreateBtn').style.display = 'inline-flex';
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+
+async function createDeckFromCsv() {
+  const name = document.getElementById('ndcDeckName').value.trim();
+  if (!name) { showToast('デッキ名を入力してください'); return; }
+  if (!ndcParsedCards.length) { showToast('CSVファイルを選択してください'); return; }
+  const id = genId();
+  const cards = ndcParsedCards.map(c => ({id: genId(), front: c.front, back: c.back, correct:0, incorrect:0, learned:false}));
+  const newDeck = { id, name, icon: ndcSelectedEmoji, cards };
+  db_local.decks.push(newDeck);
+  closeNewDeckCsvModal();
+  renderDeckGrid();
+  await saveDeckToFirestore(id);
+  showToast(`✅ 「${name}」を${cards.length}枚のカードで作成しました`);
+}
+
 // ══════════════════════════════════════════
 //  Utilities
 // ══════════════════════════════════════════
@@ -1288,7 +1431,7 @@ function hideLoading()  { document.getElementById('loadingOverlay').classList.ad
 function setSyncing(v)  { document.getElementById('syncDot').classList.toggle('syncing', v); }
 
 // Modal overlay close
-['deckModal','cardModal','csvModal','setupModal','idConfirmModal'].forEach(id => {
+['deckModal','cardModal','csvModal','setupModal','idConfirmModal','newDeckCsvModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', function(e) { if (e.target===this) this.classList.remove('open'); });
 });
 
