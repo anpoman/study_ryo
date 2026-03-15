@@ -578,6 +578,8 @@ const firebaseConfig = {
         <button type="button" onclick="copyUserId()" style="flex-shrink:0;background:#fff;border:2px solid var(--primary);color:var(--primary);border-radius:8px;padding:8px 12px;font-size:0.82rem;cursor:pointer;font-weight:600;">📋 コピー</button>
       </div>
       <p style="font-size:0.78rem;color:var(--sub);margin-top:6px;">別デバイスで同じIDを設定すると、データが共有されます。変更後は「保存」してください。</p>
+      <div id="diagBox" style="margin-top:10px;padding:10px;background:#fff;border-radius:8px;border:1px solid #ddd;font-size:0.76rem;font-family:monospace;line-height:1.8;color:#555;"></div>
+      <button type="button" onclick="runDiag()" style="margin-top:8px;background:#e8f5e9;border:1px solid #a5d6a7;color:#2e7d32;border-radius:8px;padding:6px 12px;font-size:0.78rem;cursor:pointer;font-weight:600;">🔍 接続診断を実行</button>
     </div>
     <div class="form-group">
       <label>Firebase Config（変更する場合のみ）</label>
@@ -707,11 +709,32 @@ function copyIdConfirm() {
 
 // ── Setup Change Modal ──
 function openSetupModal() {
-  const cfg = loadConfig();
   document.getElementById('setupModalInput').value = '';
   document.getElementById('setupModalErr').textContent = '';
   document.getElementById('setupModalUserId').value = userId || getOrCreateUserId();
+  document.getElementById('diagBox').innerHTML = '「接続診断を実行」ボタンで確認できます';
   document.getElementById('setupModal').classList.add('open');
+}
+
+async function runDiag() {
+  const box = document.getElementById('diagBox');
+  box.innerHTML = '⏳ 診断中...';
+  const cfg = loadConfig();
+  const projectId = cfg ? (cfg.projectId || '不明') : '未設定';
+  let firestoreCount = '?';
+  let firestoreStatus = '';
+  try {
+    const snap = await fbStore.collection(`users/${userId}/decks`).get();
+    firestoreCount = snap.docs.length;
+    firestoreStatus = '✅ 接続OK';
+  } catch(e) {
+    firestoreStatus = '❌ ' + (e.code === 'permission-denied' ? '権限エラー（ルール要更新）' : e.message);
+  }
+  box.innerHTML =
+    `📦 Firebaseプロジェクト：<strong>${projectId}</strong><br>` +
+    `🔑 共有ID：<strong>${userId}</strong><br>` +
+    `📂 Firestoreのデッキ数：<strong>${firestoreCount}件</strong><br>` +
+    `🔗 接続状態：<strong>${firestoreStatus}</strong>`;
 }
 function closeSetupModal() { document.getElementById('setupModal').classList.remove('open'); }
 function copyUserId() {
