@@ -798,9 +798,12 @@ function subscribeDecks() {
     .collection(`users/${userId}/decks`)
     .orderBy('createdAt', 'asc')
     .onSnapshot({ includeMetadataChanges: true }, snapshot => {
-      // キャッシュからのデータは無視（サーバーからのデータのみ使用）
+      // キャッシュからのデータは画面更新に使わない（ローディングは解除する）
       if (snapshot.metadata.fromCache) {
-        console.log('[FC] Snapshot from cache, skipping...');
+        console.log('[FC] Snapshot from cache, skipping data update...');
+        hideLoading();
+        setSyncing(false);
+        if (!document.querySelector('.page.active:not(#setupPage)')) showPage('deckListPage');
         return;
       }
       console.log('[FC] Snapshot received from server:', snapshot.docs.length, 'decks');
