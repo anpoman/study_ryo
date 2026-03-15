@@ -250,6 +250,57 @@
     .flip-label { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; margin-bottom: 14px; }
     .flip-text { font-size: 1.5rem; font-weight: 700; text-align: center; line-height: 1.4; }
     .flip-hint { font-size: 0.78rem; opacity: 0.6; margin-top: 16px; }
+    .speak-btn {
+      background: rgba(255,255,255,0.25); border: none; border-radius: 50%;
+      width: 36px; height: 36px; font-size: 1.1rem; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.2s, transform 0.1s; z-index: 2; flex-shrink: 0;
+    }
+    .speak-controls {
+      position: absolute; bottom: 10px; right: 10px;
+      display: flex; gap: 6px; align-items: center; z-index: 2;
+    }
+    .flip-back .speak-btn { background: rgba(108,99,255,0.12); }
+    .speak-btn:hover { background: rgba(255,255,255,0.4); transform: scale(1.1); }
+    .flip-back .speak-btn:hover { background: rgba(108,99,255,0.22); }
+    .speak-btn.speaking { background: rgba(255,255,255,0.5); animation: speakPulse 1s infinite; }
+    @keyframes speakPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.15)} }
+    .tts-speed-btn {
+      background: rgba(255,255,255,0.2); border: none; border-radius: 12px;
+      padding: 3px 8px; font-size: 0.7rem; font-weight: 700; cursor: pointer;
+      color: rgba(255,255,255,0.85); letter-spacing: 0.02em;
+      transition: background 0.2s; z-index: 2;
+    }
+    .flip-back .tts-speed-btn { background: rgba(108,99,255,0.12); color: var(--primary); }
+    .tts-speed-btn:hover { background: rgba(255,255,255,0.4); }
+    .flip-back .tts-speed-btn:hover { background: rgba(108,99,255,0.22); }
+    /* 速度調整パネル */
+    #ttsSpeedPanel {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
+      background: var(--card-bg); border-radius: 20px 20px 0 0;
+      box-shadow: 0 -4px 24px rgba(0,0,0,0.15);
+      padding: 20px 24px 32px;
+      transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+    }
+    #ttsSpeedPanel.open { transform: translateY(0); }
+    #ttsSpeedPanel .panel-handle { width: 40px; height: 4px; background: #ddd; border-radius: 2px; margin: 0 auto 18px; }
+    #ttsSpeedPanel h3 { font-size: 0.95rem; font-weight: 700; margin-bottom: 18px; text-align: center; }
+    .speed-presets { display: flex; gap: 8px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
+    .speed-preset-btn {
+      padding: 7px 16px; border: 2px solid #e0e0e0; border-radius: 20px;
+      background: none; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+      transition: all 0.15s; color: var(--text);
+    }
+    .speed-preset-btn.active { border-color: var(--primary); background: var(--primary); color: #fff; }
+    .speed-slider-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .speed-slider-row input[type=range] {
+      flex: 1; height: 6px; accent-color: var(--primary);
+      cursor: pointer;
+    }
+    .speed-slider-label { font-size: 1rem; font-weight: 700; color: var(--primary); min-width: 40px; text-align: center; }
+    .speed-slider-ends { display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--sub); padding: 0 2px; }
+    #ttsSpeedPanelOverlay { display: none; position: fixed; inset: 0; z-index: 199; background: rgba(0,0,0,0.3); }
+    #ttsSpeedPanelOverlay.open { display: block; }
     .answer-btns { display: flex; gap: 10px; width: 100%; max-width: 500px; }
     .answer-btn {
       flex: 1; padding: 12px 6px; border: none; border-radius: var(--radius);
@@ -467,10 +518,18 @@ const firebaseConfig = {
         <div class="flip-label">問題</div>
         <div class="flip-text" id="cardFrontText"></div>
         <div class="flip-hint">タップして答えを見る</div>
+        <div class="speak-controls" onclick="event.stopPropagation()">
+          <button class="tts-speed-btn" id="ttsSpeedLabelFront" onclick="openSpeedPanel()">1.0x</button>
+          <button class="speak-btn" id="speakFrontBtn" onclick="speakText('front')" title="読み上げ">🔊</button>
+        </div>
       </div>
       <div class="flip-back">
         <div class="flip-label">答え</div>
         <div class="flip-text" id="cardBackText"></div>
+        <div class="speak-controls" onclick="event.stopPropagation()">
+          <button class="tts-speed-btn" id="ttsSpeedLabelBack" onclick="openSpeedPanel()">1.0x</button>
+          <button class="speak-btn" id="speakBackBtn" onclick="speakText('back')" title="読み上げ">🔊</button>
+        </div>
       </div>
     </div>
   </div>
@@ -497,6 +556,29 @@ const firebaseConfig = {
     &nbsp;
     <button class="add-btn secondary" onclick="showDeckPage(currentDeckId)">デッキに戻る</button>
   </div>
+</div>
+
+<!-- ── TTS Speed Panel ── -->
+<div id="ttsSpeedPanelOverlay" onclick="closeSpeedPanel()"></div>
+<div id="ttsSpeedPanel">
+  <div class="panel-handle"></div>
+  <h3>🔊 読み上げ速度</h3>
+  <div class="speed-presets">
+    <button class="speed-preset-btn" onclick="setSpeedPreset(0.5)">0.5x<br><small>ゆっくり</small></button>
+    <button class="speed-preset-btn" onclick="setSpeedPreset(0.75)">0.75x</button>
+    <button class="speed-preset-btn" onclick="setSpeedPreset(1.0)">1.0x<br><small>標準</small></button>
+    <button class="speed-preset-btn" onclick="setSpeedPreset(1.25)">1.25x</button>
+    <button class="speed-preset-btn" onclick="setSpeedPreset(1.5)">1.5x<br><small>速い</small></button>
+    <button class="speed-preset-btn" onclick="setSpeedPreset(2.0)">2.0x</button>
+  </div>
+  <div class="speed-slider-row">
+    <span style="font-size:0.8rem;">🐢</span>
+    <input type="range" id="ttsSpeedSlider" min="0.5" max="2.0" step="0.05"
+           value="1.0" oninput="onSpeedSlider(this.value)">
+    <span style="font-size:0.8rem;">🐇</span>
+    <span class="speed-slider-label" id="ttsSpeedValue">1.0x</span>
+  </div>
+  <div class="speed-slider-ends"><span>0.5x</span><span>2.0x</span></div>
 </div>
 
 <!-- ── Deck Modal ── -->
@@ -880,6 +962,10 @@ async function subscribeDecks() {
       setSyncing(false); hideLoading();
       showFirestorePermissionError(); return;
     }
+    if (e.code === 'not-found' || e.code === 'failed-precondition') {
+      setSyncing(false); hideLoading();
+      showFirestoreSetupError(e); return;
+    }
     // サーバー取得失敗 → 通常のget()にフォールバック（キャッシュ含む）
     try {
       const snap = await col.get();
@@ -895,6 +981,10 @@ async function subscribeDecks() {
         setSyncing(false); hideLoading();
         showFirestorePermissionError(); return;
       }
+      // エラーコード別に分かりやすいメッセージを表示
+      setSyncing(false); hideLoading();
+      showFirestoreSetupError(e2);
+      return;
     }
   }
 
@@ -905,10 +995,6 @@ async function subscribeDecks() {
   setSyncing(false);
   hideLoading();
   if (!document.querySelector('.page.active:not(#setupPage)')) showPage('deckListPage');
-
-  if (!initialLoaded) {
-    showToast('読み込みエラー: サーバーに接続できません。ネットワーク接続とFirebaseの設定を確認してください。');
-  }
 
   // ── Step2: リアルタイム更新を onSnapshot で受け取る ──
   unsubDecks = col.onSnapshot(snapshot => {
@@ -924,17 +1010,52 @@ async function subscribeDecks() {
 }
 
 function showFirestorePermissionError() {
-  // セキュリティルール期限切れなどの権限エラーを分かりやすく表示
-  const existing = document.getElementById('permissionErrorBanner');
-  if (existing) return;
+  const existing = document.getElementById('firestoreErrorBanner');
+  if (existing) existing.remove();
   const banner = document.createElement('div');
-  banner.id = 'permissionErrorBanner';
+  banner.id = 'firestoreErrorBanner';
   banner.style.cssText = 'position:fixed;top:60px;left:0;right:0;z-index:50;background:#fff3e0;border-bottom:2px solid #ffcc80;padding:12px 16px;font-size:0.83rem;';
   banner.innerHTML = `
-    <strong style="color:#e65100;">⚠️ Firestoreへのアクセスが拒否されました</strong><br>
-    <span style="color:#666;">Firebaseコンソールで「Firestore → ルール」を開き、<code style="background:#fce4ec;padding:2px 5px;border-radius:4px;">allow read, write: if true;</code> に更新してください。</span>
+    <strong style="color:#e65100;">⚠️ Firestoreへのアクセスが拒否されました（permission-denied）</strong><br>
+    <span style="color:#666;">Firebaseコンソール →「Firestore Database」→「ルール」を開き、<code style="background:#fce4ec;padding:2px 5px;border-radius:4px;">allow read, write: if true;</code> に変更して「公開」してください。</span>
     <button onclick="this.parentElement.remove()" style="float:right;background:none;border:none;cursor:pointer;font-size:1.1rem;">✕</button>
   `;
+  document.body.appendChild(banner);
+}
+
+function showFirestoreSetupError(err) {
+  const existing = document.getElementById('firestoreErrorBanner');
+  if (existing) existing.remove();
+  const banner = document.createElement('div');
+  banner.id = 'firestoreErrorBanner';
+  banner.style.cssText = 'position:fixed;top:60px;left:0;right:0;z-index:50;background:#fce4ec;border-bottom:2px solid #ef9a9a;padding:12px 16px;font-size:0.83rem;line-height:1.6;';
+
+  const code = err && err.code ? err.code : '';
+  let msg = '';
+
+  if (code === 'unavailable' || code === 'deadline-exceeded') {
+    msg = `
+      <strong style="color:#b71c1c;">🔴 Firestoreに接続できません（${code}）</strong><br>
+      ネットワーク接続を確認してください。`;
+  } else if (code === 'not-found' || code === 'failed-precondition' || !code) {
+    msg = `
+      <strong style="color:#b71c1c;">🔴 Firestoreデータベースが見つかりません</strong><br>
+      <strong>Firestoreがまだ作成されていない可能性があります。</strong><br>
+      以下の手順で作成してください：<br>
+      ① <a href="https://console.firebase.google.com/" target="_blank" style="color:#1565c0;">Firebaseコンソール</a> を開く<br>
+      ② 左メニュー「<strong>Firestore Database</strong>」をクリック<br>
+      ③「<strong>データベースを作成</strong>」ボタンをクリック<br>
+      ④ ロケーション：<strong>asia-northeast1（東京）</strong>、モード：<strong>テストモード</strong> を選択<br>
+      ⑤ 作成後にこのページを再読み込みしてください<br>
+      <small style="color:#888;">エラーコード: ${code || err.message}</small>`;
+  } else {
+    msg = `
+      <strong style="color:#b71c1c;">🔴 Firestoreエラー（${code}）</strong><br>
+      <span style="color:#666;">${err.message || ''}</span><br>
+      Firebaseコンソールで設定を確認してください。`;
+  }
+
+  banner.innerHTML = msg + `<button onclick="this.parentElement.remove()" style="float:right;background:none;border:none;cursor:pointer;font-size:1.1rem;margin-top:-4px;">✕</button>`;
   document.body.appendChild(banner);
 }
 
@@ -1112,9 +1233,108 @@ function startStudy(mode='all') {
   document.getElementById('progressText').style.display  = 'block';
   showPage('studyPage');
   showStudyCard();
+  updateSpeedUI(ttsRate); // 学習開始時に速度ラベルを反映
+}
+
+// ── 読み上げ（Web Speech API）──
+let ttsActive = false;
+let ttsRate = parseFloat(localStorage.getItem('ttsRate') || '1.0');
+
+function updateSpeedUI(rate) {
+  const r = parseFloat(rate);
+  const label = r % 1 === 0 ? r.toFixed(1) + 'x' : r + 'x';
+  ['ttsSpeedLabelFront','ttsSpeedLabelBack'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = label;
+  });
+  const slider = document.getElementById('ttsSpeedSlider');
+  const valEl  = document.getElementById('ttsSpeedValue');
+  if (slider) slider.value = r;
+  if (valEl)  valEl.textContent = label;
+  // プリセットボタンのアクティブ状態を更新
+  document.querySelectorAll('.speed-preset-btn').forEach(btn => {
+    const v = parseFloat(btn.getAttribute('onclick').match(/[\d.]+/)[0]);
+    btn.classList.toggle('active', Math.abs(v - r) < 0.01);
+  });
+}
+
+function setSpeedPreset(rate) {
+  ttsRate = rate;
+  localStorage.setItem('ttsRate', rate);
+  updateSpeedUI(rate);
+}
+
+function onSpeedSlider(val) {
+  ttsRate = parseFloat(val);
+  localStorage.setItem('ttsRate', ttsRate);
+  updateSpeedUI(ttsRate);
+}
+
+function openSpeedPanel() {
+  updateSpeedUI(ttsRate);
+  document.getElementById('ttsSpeedPanel').classList.add('open');
+  document.getElementById('ttsSpeedPanelOverlay').classList.add('open');
+}
+
+function closeSpeedPanel() {
+  document.getElementById('ttsSpeedPanel').classList.remove('open');
+  document.getElementById('ttsSpeedPanelOverlay').classList.remove('open');
+}
+
+function speakText(side) {
+  if (!window.speechSynthesis) {
+    showToast('お使いのブラウザは読み上げに対応していません');
+    return;
+  }
+  const card = studyCards[studyIndex];
+  if (!card) return;
+  const text = side === 'front' ? card.front : card.back;
+  const btnId = side === 'front' ? 'speakFrontBtn' : 'speakBackBtn';
+  const btn = document.getElementById(btnId);
+
+  // 読み上げ中の場合は停止
+  if (window.speechSynthesis.speaking) {
+    window.speechSynthesis.cancel();
+    ttsActive = false;
+    document.querySelectorAll('.speak-btn').forEach(b => { b.textContent = '🔊'; b.classList.remove('speaking'); });
+    return;
+  }
+
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'ja-JP';
+  utter.rate = ttsRate;
+  utter.pitch = 1.0;
+
+  // 日本語音声を優先選択
+  const voices = window.speechSynthesis.getVoices();
+  const jaVoice = voices.find(v => v.lang === 'ja-JP' || v.lang === 'ja') ||
+                  voices.find(v => v.lang.startsWith('ja'));
+  if (jaVoice) utter.voice = jaVoice;
+
+  utter.onstart = () => {
+    ttsActive = true;
+    btn.textContent = '⏹';
+    btn.classList.add('speaking');
+  };
+  utter.onend = utter.onerror = () => {
+    ttsActive = false;
+    btn.textContent = '🔊';
+    btn.classList.remove('speaking');
+  };
+
+  window.speechSynthesis.speak(utter);
+}
+
+function stopSpeaking() {
+  if (window.speechSynthesis && window.speechSynthesis.speaking) {
+    window.speechSynthesis.cancel();
+  }
+  ttsActive = false;
+  document.querySelectorAll('.speak-btn').forEach(b => { b.textContent = '🔊'; b.classList.remove('speaking'); });
 }
 
 function showStudyCard() {
+  stopSpeaking(); // カード切り替え時に読み上げ停止
   isFlipped = false;
   document.getElementById('flipCard').classList.remove('flipped');
   ['btnIncorrect','btnPartial','btnLearned'].forEach(id => document.getElementById(id).disabled = true);
@@ -1522,7 +1742,14 @@ function init() {
 }
 
 // DOMとすべての外部スクリプトが読み込まれてから実行
-window.addEventListener('load', init);
+window.addEventListener('load', () => {
+  // Chromeでは音声リストの読み込みが遅延するためあらかじめ初期化
+  if (window.speechSynthesis) {
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+  }
+  init();
+});
 </script>
 </body>
 </html>
