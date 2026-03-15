@@ -250,30 +250,29 @@
     .flip-label { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; margin-bottom: 14px; }
     .flip-text { font-size: 1.5rem; font-weight: 700; text-align: center; line-height: 1.4; }
     .flip-hint { font-size: 0.78rem; opacity: 0.6; margin-top: 16px; }
-    .speak-btn {
-      background: rgba(255,255,255,0.25); border: none; border-radius: 50%;
-      width: 36px; height: 36px; font-size: 1.1rem; cursor: pointer;
+    /* カード外の読み上げコントロールバー */
+    .tts-bar {
       display: flex; align-items: center; justify-content: center;
-      transition: background 0.2s, transform 0.1s; z-index: 2; flex-shrink: 0;
+      gap: 10px; width: 100%; max-width: 500px; margin-bottom: 14px;
     }
-    .speak-controls {
-      position: absolute; bottom: 10px; right: 10px;
-      display: flex; gap: 6px; align-items: center; z-index: 2;
+    .speak-btn {
+      background: #f0efff; border: 2px solid var(--primary); border-radius: 24px;
+      padding: 7px 18px; font-size: 0.88rem; font-weight: 700; cursor: pointer;
+      color: var(--primary); display: flex; align-items: center; gap: 6px;
+      transition: background 0.15s, transform 0.1s;
     }
-    .flip-back .speak-btn { background: rgba(108,99,255,0.12); }
-    .speak-btn:hover { background: rgba(255,255,255,0.4); transform: scale(1.1); }
-    .flip-back .speak-btn:hover { background: rgba(108,99,255,0.22); }
-    .speak-btn.speaking { background: rgba(255,255,255,0.5); animation: speakPulse 1s infinite; }
-    @keyframes speakPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.15)} }
+    .speak-btn:hover { background: #e0deff; transform: scale(1.03); }
+    .speak-btn.speaking {
+      background: var(--primary); color: #fff;
+      animation: speakPulse 1.2s infinite;
+    }
+    @keyframes speakPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.04)} }
     .tts-speed-btn {
-      background: rgba(255,255,255,0.2); border: none; border-radius: 12px;
-      padding: 3px 8px; font-size: 0.7rem; font-weight: 700; cursor: pointer;
-      color: rgba(255,255,255,0.85); letter-spacing: 0.02em;
-      transition: background 0.2s; z-index: 2;
+      background: #f5f5f5; border: 1.5px solid #ddd; border-radius: 14px;
+      padding: 6px 12px; font-size: 0.8rem; font-weight: 700; cursor: pointer;
+      color: var(--sub); transition: background 0.15s, border-color 0.15s;
     }
-    .flip-back .tts-speed-btn { background: rgba(108,99,255,0.12); color: var(--primary); }
-    .tts-speed-btn:hover { background: rgba(255,255,255,0.4); }
-    .flip-back .tts-speed-btn:hover { background: rgba(108,99,255,0.22); }
+    .tts-speed-btn:hover { background: #ede9ff; border-color: var(--primary); color: var(--primary); }
     /* 速度調整パネル */
     #ttsSpeedPanel {
       position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
@@ -518,21 +517,20 @@ const firebaseConfig = {
         <div class="flip-label">問題</div>
         <div class="flip-text" id="cardFrontText"></div>
         <div class="flip-hint">タップして答えを見る</div>
-        <div class="speak-controls" onclick="event.stopPropagation()">
-          <button class="tts-speed-btn" id="ttsSpeedLabelFront" onclick="openSpeedPanel()">1.0x</button>
-          <button class="speak-btn" id="speakFrontBtn" onclick="speakText('front')" title="読み上げ">🔊</button>
-        </div>
       </div>
       <div class="flip-back">
         <div class="flip-label">答え</div>
         <div class="flip-text" id="cardBackText"></div>
-        <div class="speak-controls" onclick="event.stopPropagation()">
-          <button class="tts-speed-btn" id="ttsSpeedLabelBack" onclick="openSpeedPanel()">1.0x</button>
-          <button class="speak-btn" id="speakBackBtn" onclick="speakText('back')" title="読み上げ">🔊</button>
-        </div>
       </div>
     </div>
   </div>
+
+  <!-- カード外：読み上げコントロール -->
+  <div class="tts-bar">
+    <button class="speak-btn" id="speakToggleBtn" onclick="toggleSpeak()">🔊 <span id="speakBtnLabel">再読み上げ</span></button>
+    <button class="tts-speed-btn" id="ttsSpeedLabel" onclick="openSpeedPanel()">1.0x</button>
+  </div>
+
   <div class="answer-btns">
     <button class="answer-btn incorrect" id="btnIncorrect" onclick="answer('incorrect')" disabled>
       ✗ <span class="sub-label">もう一度</span>
@@ -1239,19 +1237,17 @@ function startStudy(mode='all') {
 // ── 読み上げ（Web Speech API）──
 let ttsActive = false;
 let ttsRate = parseFloat(localStorage.getItem('ttsRate') || '1.0');
+let ttsSide = 'front'; // 現在読み上げ中の面
 
 function updateSpeedUI(rate) {
   const r = parseFloat(rate);
-  const label = r % 1 === 0 ? r.toFixed(1) + 'x' : r + 'x';
-  ['ttsSpeedLabelFront','ttsSpeedLabelBack'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = label;
-  });
+  const label = (r % 1 === 0 ? r.toFixed(1) : r) + 'x';
+  const el = document.getElementById('ttsSpeedLabel');
+  if (el) el.textContent = label;
   const slider = document.getElementById('ttsSpeedSlider');
   const valEl  = document.getElementById('ttsSpeedValue');
   if (slider) slider.value = r;
   if (valEl)  valEl.textContent = label;
-  // プリセットボタンのアクティブ状態を更新
   document.querySelectorAll('.speed-preset-btn').forEach(btn => {
     const v = parseFloat(btn.getAttribute('onclick').match(/[\d.]+/)[0]);
     btn.classList.toggle('active', Math.abs(v - r) < 0.01);
@@ -1281,48 +1277,60 @@ function closeSpeedPanel() {
   document.getElementById('ttsSpeedPanelOverlay').classList.remove('open');
 }
 
-function speakText(side) {
-  if (!window.speechSynthesis) {
-    showToast('お使いのブラウザは読み上げに対応していません');
-    return;
+function setSpeakBtnState(speaking) {
+  const btn = document.getElementById('speakToggleBtn');
+  const lbl = document.getElementById('speakBtnLabel');
+  if (!btn || !lbl) return;
+  if (speaking) {
+    btn.classList.add('speaking');
+    lbl.textContent = '停止';
+  } else {
+    btn.classList.remove('speaking');
+    lbl.textContent = '再読み上げ';
   }
+}
+
+// テキストを読み上げる（side: 'front' | 'back'）
+function speakText(side) {
+  if (!window.speechSynthesis) return;
   const card = studyCards[studyIndex];
   if (!card) return;
   const text = side === 'front' ? card.front : card.back;
-  const btnId = side === 'front' ? 'speakFrontBtn' : 'speakBackBtn';
-  const btn = document.getElementById(btnId);
 
-  // 読み上げ中の場合は停止
-  if (window.speechSynthesis.speaking) {
-    window.speechSynthesis.cancel();
-    ttsActive = false;
-    document.querySelectorAll('.speak-btn').forEach(b => { b.textContent = '🔊'; b.classList.remove('speaking'); });
-    return;
-  }
+  window.speechSynthesis.cancel();
 
   const utter = new SpeechSynthesisUtterance(text);
-  utter.lang = 'ja-JP';
-  utter.rate = ttsRate;
+  utter.lang  = 'ja-JP';
+  utter.rate  = ttsRate;
   utter.pitch = 1.0;
 
-  // 日本語音声を優先選択
   const voices = window.speechSynthesis.getVoices();
   const jaVoice = voices.find(v => v.lang === 'ja-JP' || v.lang === 'ja') ||
                   voices.find(v => v.lang.startsWith('ja'));
   if (jaVoice) utter.voice = jaVoice;
 
-  utter.onstart = () => {
-    ttsActive = true;
-    btn.textContent = '⏹';
-    btn.classList.add('speaking');
-  };
-  utter.onend = utter.onerror = () => {
-    ttsActive = false;
-    btn.textContent = '🔊';
-    btn.classList.remove('speaking');
-  };
+  ttsSide = side;
+  utter.onstart = () => { ttsActive = true;  setSpeakBtnState(true); };
+  utter.onend   = () => { ttsActive = false; setSpeakBtnState(false); };
+  utter.onerror = () => { ttsActive = false; setSpeakBtnState(false); };
 
   window.speechSynthesis.speak(utter);
+}
+
+// 停止 / 再読み上げ の切り替えボタン
+function toggleSpeak() {
+  if (!window.speechSynthesis) {
+    showToast('お使いのブラウザは読み上げに対応していません');
+    return;
+  }
+  if (window.speechSynthesis.speaking) {
+    window.speechSynthesis.cancel();
+    ttsActive = false;
+    setSpeakBtnState(false);
+  } else {
+    // 現在表示中の面を再読み上げ
+    speakText(ttsSide);
+  }
 }
 
 function stopSpeaking() {
@@ -1330,11 +1338,11 @@ function stopSpeaking() {
     window.speechSynthesis.cancel();
   }
   ttsActive = false;
-  document.querySelectorAll('.speak-btn').forEach(b => { b.textContent = '🔊'; b.classList.remove('speaking'); });
+  setSpeakBtnState(false);
 }
 
 function showStudyCard() {
-  stopSpeaking(); // カード切り替え時に読み上げ停止
+  stopSpeaking();
   isFlipped = false;
   document.getElementById('flipCard').classList.remove('flipped');
   ['btnIncorrect','btnPartial','btnLearned'].forEach(id => document.getElementById(id).disabled = true);
@@ -1344,6 +1352,9 @@ function showStudyCard() {
   const pct = (studyIndex / studyCards.length) * 100;
   document.getElementById('progressFill').style.width = pct + '%';
   document.getElementById('progressText').textContent = `${studyIndex+1} / ${studyCards.length} 枚`;
+  // 問題面を自動読み上げ
+  setSpeakBtnState(false);
+  setTimeout(() => speakText('front'), 300);
 }
 
 function flipCard() {
@@ -1351,6 +1362,8 @@ function flipCard() {
   isFlipped = true;
   document.getElementById('flipCard').classList.add('flipped');
   ['btnIncorrect','btnPartial','btnLearned'].forEach(id => document.getElementById(id).disabled = false);
+  // 答え面を自動読み上げ
+  speakText('back');
 }
 
 function answer(type) {
