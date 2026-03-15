@@ -395,6 +395,14 @@ const firebaseConfig = {
 }'></textarea>
     <div class="setup-err" id="setupErr"></div>
   </div>
+  <div class="form-group" style="background:#f0efff;border-radius:12px;padding:14px;">
+    <label style="color:var(--primary);">🔑 共有ID（複数デバイスで同じデータを使う場合）</label>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <input type="text" id="userIdInput" placeholder="自動生成されます" style="font-family:monospace;font-size:0.85rem;">
+      <button type="button" onclick="regenerateUserId()" style="flex-shrink:0;background:#fff;border:2px solid var(--primary);color:var(--primary);border-radius:8px;padding:8px 12px;font-size:0.82rem;cursor:pointer;font-weight:600;">🔄 再生成</button>
+    </div>
+    <p style="font-size:0.78rem;color:var(--sub);margin-top:6px;">別のデバイスで同じデータを参照するには、<strong>全デバイスで同じIDを入力</strong>してください。</p>
+  </div>
   <button class="add-btn" style="width:100%;justify-content:center;" onclick="saveConfig()">設定を保存して開始 →</button>
 </div>
 
@@ -549,15 +557,23 @@ const firebaseConfig = {
 <!-- ── Setup Change Modal ── -->
 <div class="modal-overlay" id="setupModal">
   <div class="modal">
-    <h2>⚙️ Firebase設定を変更</h2>
+    <h2>⚙️ 設定を変更</h2>
+    <div class="form-group" style="background:#f0efff;border-radius:12px;padding:14px;margin-bottom:16px;">
+      <label style="color:var(--primary);">🔑 共有ID</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input type="text" id="setupModalUserId" style="font-family:monospace;font-size:0.85rem;">
+        <button type="button" onclick="copyUserId()" style="flex-shrink:0;background:#fff;border:2px solid var(--primary);color:var(--primary);border-radius:8px;padding:8px 12px;font-size:0.82rem;cursor:pointer;font-weight:600;">📋 コピー</button>
+      </div>
+      <p style="font-size:0.78rem;color:var(--sub);margin-top:6px;">別デバイスで同じIDを設定すると、データが共有されます。変更後は「保存」してください。</p>
+    </div>
     <div class="form-group">
-      <label>firebaseConfig の内容</label>
-      <textarea class="config-input" id="setupModalInput" style="min-height:120px;"></textarea>
+      <label>Firebase Config（変更する場合のみ）</label>
+      <textarea class="config-input" id="setupModalInput" style="min-height:100px;"></textarea>
       <div class="setup-err" id="setupModalErr"></div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeSetupModal()">キャンセル</button>
-      <button class="btn btn-primary" onclick="saveConfigModal()">保存して再ログイン</button>
+      <button class="btn btn-primary" onclick="saveConfigModal()">保存</button>
     </div>
   </div>
 </div>
@@ -577,14 +593,23 @@ let userId = null;
 let unsubDecks = null;
 let db_local = { decks: [] };
 
-// デバイスに固有のIDを生成・取得（ログイン不要）
+// ユーザーIDを生成・取得（固定IDに対応）
+function generateUserId() {
+  return 'u_' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
 function getOrCreateUserId() {
   let id = localStorage.getItem(USER_ID_KEY);
   if (!id) {
-    id = 'u_' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+    id = generateUserId();
     localStorage.setItem(USER_ID_KEY, id);
   }
   return id;
+}
+
+function regenerateUserId() {
+  const newId = generateUserId();
+  document.getElementById('userIdInput').value = newId;
 }
 
 let currentDeckId = null;
@@ -652,7 +677,10 @@ function saveConfig() {
     return;
   }
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-  userId = getOrCreateUserId();
+  // 共有IDを保存（入力があればそれを使用、なければ自動生成）
+  const inputId = document.getElementById('userIdInput').value.trim();
+  userId = inputId || getOrCreateUserId();
+  localStorage.setItem(USER_ID_KEY, userId);
   subscribeDecks();
   showPage('deckListPage');
 }
@@ -660,22 +688,42 @@ function saveConfig() {
 // ── Setup Change Modal ──
 function openSetupModal() {
   const cfg = loadConfig();
-  document.getElementById('setupModalInput').value = cfg ? JSON.stringify(cfg, null, 2) : '';
+  document.getElementById('setupModalInput').value = '';
   document.getElementById('setupModalErr').textContent = '';
+  document.getElementById('setupModalUserId').value = userId || getOrCreateUserId();
   document.getElementById('setupModal').classList.add('open');
 }
 function closeSetupModal() { document.getElementById('setupModal').classList.remove('open'); }
+function copyUserId() {
+  const id = document.getElementById('setupModalUserId').value.trim();
+  if (!id) return;
+  navigator.clipboard.writeText(id).then(() => showToast('IDをコピーしました'));
+}
 function saveConfigModal() {
   const raw = document.getElementById('setupModalInput').value.trim();
   const err = document.getElementById('setupModalErr');
   err.textContent = '';
-  const config = parseFirebaseConfig(raw);
-  if (!config) { err.textContent = '設定を読み取れませんでした。'; return; }
-  if (!config.apiKey || !config.projectId) { err.textContent = 'apiKey と projectId が必要です。'; return; }
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+
+  // Firebase config の変更（入力があった場合のみ）
+  if (raw) {
+    const config = parseFirebaseConfig(raw);
+    if (!config) { err.textContent = '設定を読み取れませんでした。'; return; }
+    if (!config.apiKey || !config.projectId) { err.textContent = 'apiKey と projectId が必要です。'; return; }
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  }
+
+  // 共有IDの変更
+  const newId = document.getElementById('setupModalUserId').value.trim();
+  if (newId && newId !== userId) {
+    userId = newId;
+    localStorage.setItem(USER_ID_KEY, userId);
+    if (unsubDecks) { unsubDecks(); unsubDecks = null; }
+    subscribeDecks();
+    showToast('IDを変更しました。データを読み込み中…');
+  } else {
+    showToast('設定を保存しました');
+  }
   closeSetupModal();
-  showToast('設定を保存しました。再ログインしてください。');
-  if (fbAuth) fbAuth.signOut();
 }
 
 // ══════════════════════════════════════════
@@ -1181,6 +1229,9 @@ function init() {
     showPage('deckListPage');
   } else {
     hideLoading();
+    // セットアップページにIDのデフォルト値を表示
+    const existingId = localStorage.getItem(USER_ID_KEY) || generateUserId();
+    document.getElementById('userIdInput').value = existingId;
     showPage('setupPage');
   }
 }
