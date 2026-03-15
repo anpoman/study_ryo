@@ -396,14 +396,23 @@ const firebaseConfig = {
     <div class="setup-err" id="setupErr"></div>
   </div>
   <div class="form-group" style="background:#f0efff;border-radius:12px;padding:14px;">
-    <label style="color:var(--primary);">🔑 共有ID（複数デバイスで同じデータを使う場合）</label>
-    <div style="display:flex;gap:8px;align-items:center;">
-      <input type="text" id="userIdInput" placeholder="自動生成されます" style="font-family:monospace;font-size:0.85rem;">
-      <button type="button" onclick="regenerateUserId()" style="flex-shrink:0;background:#fff;border:2px solid var(--primary);color:var(--primary);border-radius:8px;padding:8px 12px;font-size:0.82rem;cursor:pointer;font-weight:600;">🔄 再生成</button>
-    </div>
-    <p style="font-size:0.78rem;color:var(--sub);margin-top:6px;">別のデバイスで同じデータを参照するには、<strong>全デバイスで同じIDを入力</strong>してください。</p>
+    <label style="color:var(--primary);">🔑 共有ID（任意）</label>
+    <input type="text" id="userIdInput" placeholder="PCで先に設定した場合はそのIDをここに入力。初めての場合は空欄でOK。" style="font-family:monospace;font-size:0.85rem;margin-bottom:6px;">
+    <p style="font-size:0.78rem;color:var(--sub);">空欄のまま保存するとIDが自動生成されます。設定後にIDをコピーして他のデバイスで入力することでデータを共有できます。</p>
   </div>
   <button class="add-btn" style="width:100%;justify-content:center;" onclick="saveConfig()">設定を保存して開始 →</button>
+</div>
+
+<!-- ── ID 確認モーダル ── -->
+<div class="modal-overlay" id="idConfirmModal">
+  <div class="modal" style="text-align:center;">
+    <div style="font-size:2rem;margin-bottom:8px;">🔑</div>
+    <h2 style="margin-bottom:10px;">あなたの共有IDです</h2>
+    <p style="font-size:0.82rem;color:var(--sub);margin-bottom:14px;">このIDを他のデバイスのセットアップ画面に入力すると、同じデータを参照できます。</p>
+    <div style="background:#f0efff;border-radius:10px;padding:12px;font-family:monospace;font-size:0.88rem;word-break:break-all;margin-bottom:14px;" id="idConfirmText"></div>
+    <button onclick="copyIdConfirm()" style="background:var(--primary);color:#fff;border:none;border-radius:50px;padding:10px 24px;font-size:0.9rem;font-weight:700;cursor:pointer;margin-bottom:8px;">📋 IDをコピー</button><br>
+    <button onclick="document.getElementById('idConfirmModal').classList.remove('open');showPage('deckListPage');" style="background:none;border:none;color:var(--sub);font-size:0.85rem;cursor:pointer;margin-top:8px;">このまま開始する →</button>
+  </div>
 </div>
 
 
@@ -607,10 +616,6 @@ function getOrCreateUserId() {
   return id;
 }
 
-function regenerateUserId() {
-  const newId = generateUserId();
-  document.getElementById('userIdInput').value = newId;
-}
 
 let currentDeckId = null;
 let editDeckId = null;
@@ -679,10 +684,21 @@ function saveConfig() {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   // 共有IDを保存（入力があればそれを使用、なければ自動生成）
   const inputId = document.getElementById('userIdInput').value.trim();
-  userId = inputId || getOrCreateUserId();
+  const isNewId = !inputId; // 空欄なら新規生成
+  userId = inputId || generateUserId();
   localStorage.setItem(USER_ID_KEY, userId);
   subscribeDecks();
-  showPage('deckListPage');
+  // 新しく生成したIDはユーザーに確認させる
+  if (isNewId) {
+    document.getElementById('idConfirmText').textContent = userId;
+    document.getElementById('idConfirmModal').classList.add('open');
+  } else {
+    showPage('deckListPage');
+  }
+}
+
+function copyIdConfirm() {
+  navigator.clipboard.writeText(userId).then(() => showToast('IDをコピーしました'));
 }
 
 // ── Setup Change Modal ──
@@ -1198,7 +1214,7 @@ function hideLoading()  { document.getElementById('loadingOverlay').classList.ad
 function setSyncing(v)  { document.getElementById('syncDot').classList.toggle('syncing', v); }
 
 // Modal overlay close
-['deckModal','cardModal','csvModal','setupModal'].forEach(id => {
+['deckModal','cardModal','csvModal','setupModal','idConfirmModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', function(e) { if (e.target===this) this.classList.remove('open'); });
 });
 
@@ -1229,9 +1245,8 @@ function init() {
     showPage('deckListPage');
   } else {
     hideLoading();
-    // セットアップページにIDのデフォルト値を表示
-    const existingId = localStorage.getItem(USER_ID_KEY) || generateUserId();
-    document.getElementById('userIdInput').value = existingId;
+    // セットアップページのIDフィールドは空欄にする（自動生成IDを誤って使わせない）
+    document.getElementById('userIdInput').value = '';
     showPage('setupPage');
   }
 }
