@@ -418,6 +418,10 @@ const firebaseConfig = {
 
 <!-- ── 2. Deck List ── -->
 <div class="page" id="deckListPage">
+  <div id="userIdBanner" style="background:#f0efff;border-radius:10px;padding:8px 12px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:0.78rem;cursor:pointer;" onclick="openSetupModal()" title="IDを確認・変更">
+    <span style="color:var(--sub);">🔑 共有ID：<span id="userIdDisplay" style="font-family:monospace;color:var(--primary);font-weight:700;"></span></span>
+    <span style="color:var(--sub);font-size:0.72rem;">タップで変更 ⚙️</span>
+  </div>
   <div style="margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
     <p class="section-title" style="margin-bottom:0;">デッキ一覧</p>
     <button class="add-btn" onclick="openDeckModal()">＋ デッキを追加</button>
@@ -733,11 +737,14 @@ function saveConfigModal() {
   if (newId && newId !== userId) {
     userId = newId;
     localStorage.setItem(USER_ID_KEY, userId);
-    if (unsubDecks) { unsubDecks(); unsubDecks = null; }
-    subscribeDecks();
+    const existing = document.getElementById('permissionErrorBanner');
+    if (existing) existing.remove();
+    subscribeDecks(); // 内部でunsubDecks・db_local.decksクリア・バナー更新を実施
     showToast('IDを変更しました。データを読み込み中…');
+  } else if (!newId) {
+    showToast('IDが空欄です。変更されませんでした。');
   } else {
-    showToast('設定を保存しました');
+    showToast('IDは変更されていません（同じIDです）');
   }
   closeSetupModal();
 }
@@ -746,12 +753,20 @@ function saveConfigModal() {
 //  Firestore Sync
 // ══════════════════════════════════════════
 function subscribeDecks() {
-  if (unsubDecks) unsubDecks();
+  if (unsubDecks) { unsubDecks(); unsubDecks = null; }
+  // ID変更時に古いデータをクリア
+  db_local.decks = [];
+  renderDeckGrid();
+  // IDバナーを更新
+  const disp = document.getElementById('userIdDisplay');
+  if (disp) disp.textContent = userId;
   setSyncing(true);
+  console.log('[FC] Subscribing to path: users/' + userId + '/decks');
   unsubDecks = fbStore
     .collection(`users/${userId}/decks`)
     .orderBy('createdAt', 'asc')
     .onSnapshot(snapshot => {
+      console.log('[FC] Snapshot received:', snapshot.docs.length, 'decks');
       db_local.decks = snapshot.docs.map(doc => {
         const d = doc.data();
         return {
@@ -768,11 +783,30 @@ function subscribeDecks() {
       hideLoading();
       if (!document.querySelector('.page.active:not(#setupPage)')) showPage('deckListPage');
     }, err => {
-      console.error(err);
+      console.error('[FC] Firestore error:', err.code, err.message);
       setSyncing(false);
-      showToast('同期エラーが発生しました');
       hideLoading();
+      if (err.code === 'permission-denied') {
+        showFirestorePermissionError();
+      } else {
+        showToast('同期エラー: ' + (err.message || err.code));
+      }
     });
+}
+
+function showFirestorePermissionError() {
+  // セキュリティルール期限切れなどの権限エラーを分かりやすく表示
+  const existing = document.getElementById('permissionErrorBanner');
+  if (existing) return;
+  const banner = document.createElement('div');
+  banner.id = 'permissionErrorBanner';
+  banner.style.cssText = 'position:fixed;top:60px;left:0;right:0;z-index:50;background:#fff3e0;border-bottom:2px solid #ffcc80;padding:12px 16px;font-size:0.83rem;';
+  banner.innerHTML = `
+    <strong style="color:#e65100;">⚠️ Firestoreへのアクセスが拒否されました</strong><br>
+    <span style="color:#666;">Firebaseコンソールで「Firestore → ルール」を開き、<code style="background:#fce4ec;padding:2px 5px;border-radius:4px;">allow read, write: if true;</code> に更新してください。</span>
+    <button onclick="this.parentElement.remove()" style="float:right;background:none;border:none;cursor:pointer;font-size:1.1rem;">✕</button>
+  `;
+  document.body.appendChild(banner);
 }
 
 async function saveDeckToFirestore(deckId) {
@@ -1241,7 +1275,7 @@ function init() {
   const config = loadConfig();
   if (config && initFirebase(config)) {
     userId = getOrCreateUserId();
-    subscribeDecks();
+    subscribeDecks(); // 内部でIDバナー更新・デッキ購読を実施
     showPage('deckListPage');
   } else {
     hideLoading();
