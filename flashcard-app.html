@@ -273,6 +273,31 @@
       color: var(--sub); transition: background 0.15s, border-color 0.15s;
     }
     .tts-speed-btn:hover { background: #ede9ff; border-color: var(--primary); color: var(--primary); }
+    /* ── 学習順序トグル ── */
+    .order-toggle {
+      display: flex; gap: 8px; margin-top: 4px;
+    }
+    .order-btn {
+      flex: 1; padding: 10px 8px; border-radius: 10px; border: 2px solid #e0e0e0;
+      background: #f4f4f8; color: var(--sub); font-size: 0.88rem; font-weight: 600;
+      cursor: pointer; transition: all 0.15s; text-align: center;
+    }
+    .order-btn.active {
+      border-color: var(--primary); background: #f0efff; color: var(--primary);
+    }
+    .start-pos-row {
+      display: flex; align-items: center; gap: 10px; margin-top: 4px; flex-wrap: wrap;
+    }
+    .start-pos-row input[type=number] {
+      width: 72px; padding: 8px 10px; border: 1.5px solid #ddd; border-radius: 8px;
+      font-size: 1rem; font-weight: 700; color: var(--text); text-align: center;
+    }
+    .start-pos-row input[type=number]:focus { border-color: var(--primary); outline: none; }
+    .start-pos-preview {
+      font-size: 0.8rem; color: var(--sub); margin-top: 6px;
+      background: #f4f4f8; border-radius: 8px; padding: 6px 10px;
+      min-height: 28px; word-break: break-all;
+    }
     /* 速度調整パネル */
     #ttsSpeedPanel {
       position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
@@ -579,6 +604,33 @@ const firebaseConfig = {
   <div class="speed-slider-ends"><span>0.5x</span><span>2.0x</span></div>
 </div>
 
+<!-- ── Study Start Modal ── -->
+<div class="modal-overlay" id="studyStartModal">
+  <div class="modal" style="max-width:360px;">
+    <h2 id="studyStartTitle">▶ 学習設定</h2>
+    <div class="form-group">
+      <label>出題順</label>
+      <div class="order-toggle">
+        <button class="order-btn" id="orderBtnRandom" onclick="setStudyOrder('random')">🔀 ランダム</button>
+        <button class="order-btn" id="orderBtnSeq" onclick="setStudyOrder('sequential')">📋 順番通り</button>
+      </div>
+    </div>
+    <div class="form-group" id="startPosGroup" style="display:none;">
+      <label>開始位置 <span id="startPosTotal" style="color:var(--sub);font-weight:400;font-size:0.85rem;"></span></label>
+      <div class="start-pos-row">
+        <input type="number" id="studyStartPos" min="1" value="1"
+               oninput="onStartPosChange(this.value)">
+        <span style="font-size:0.88rem;color:var(--sub);">枚目から開始</span>
+      </div>
+      <div class="start-pos-preview" id="startPosPreview"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeStudyStartModal()">キャンセル</button>
+      <button class="btn btn-primary" onclick="startStudyFromModal()">▶ 開始</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Deck Modal ── -->
 <div class="modal-overlay" id="deckModal">
   <div class="modal">
@@ -751,6 +803,8 @@ let editCardId = null;
 let selectedEmoji = EMOJIS[0];
 let currentStudyMode = 'all';
 let studyCards = [], studyIndex = 0, studyOk = 0, studyNg = 0, isFlipped = false;
+let studyOrderMode = localStorage.getItem('studyOrderMode') || 'random'; // 'random' | 'sequential'
+let studyPendingMode = 'all'; // openStudyStartModal で一時保持
 
 let parsedCsvCards = [];
 
@@ -1243,8 +1297,8 @@ function renderDeckDetail() {
       <div class="learned-bar-wrap"><div class="learned-bar"><div class="learned-bar-fill" style="width:${pct}%"></div></div></div>
     </div>
     <div style="display:flex;flex-direction:column;gap:6px;margin-left:8px;">
-      <button class="study-btn" onclick="startStudy('all')" ${total===0?'disabled':''}>▶ すべて学習</button>
-      <button class="review-btn" onclick="startStudy('review')" ${unlearnedCount===0?'disabled':''}>📖 復習 (${unlearnedCount}枚)</button>
+      <button class="study-btn" onclick="openStudyStartModal('all')" ${total===0?'disabled':''}>▶ すべて学習</button>
+      <button class="review-btn" onclick="openStudyStartModal('review')" ${unlearnedCount===0?'disabled':''}>📖 復習 (${unlearnedCount}枚)</button>
     </div>
   `;
 
@@ -1291,6 +1345,77 @@ function toggleLearned(cardId) {
 // ══════════════════════════════════════════
 //  Study Mode
 // ══════════════════════════════════════════
+// ── 学習開始モーダル ──
+function openStudyStartModal(mode) {
+  studyPendingMode = mode;
+  const deck = getDeck(currentDeckId);
+  if (!deck || deck.cards === null) return;
+
+  const cards = mode === 'review'
+    ? deck.cards.filter(c => !c.learned)
+    : deck.cards;
+
+  document.getElementById('studyStartTitle').textContent =
+    mode === 'review' ? '📖 復習設定' : '▶ 学習設定';
+
+  // 順序ボタンの状態を反映
+  setStudyOrder(studyOrderMode, true);
+
+  // 開始位置の最大値を更新
+  const total = cards.length;
+  document.getElementById('studyStartPos').max = total;
+  document.getElementById('studyStartPos').value = 1;
+  document.getElementById('startPosTotal').textContent = `（全 ${total} 枚）`;
+  updateStartPosPreview(cards, 1);
+
+  document.getElementById('studyStartModal').classList.add('open');
+}
+
+function closeStudyStartModal() {
+  document.getElementById('studyStartModal').classList.remove('open');
+}
+
+function setStudyOrder(order, silent) {
+  studyOrderMode = order;
+  if (!silent) localStorage.setItem('studyOrderMode', order);
+  document.getElementById('orderBtnRandom').classList.toggle('active', order === 'random');
+  document.getElementById('orderBtnSeq').classList.toggle('active', order === 'sequential');
+  document.getElementById('startPosGroup').style.display =
+    order === 'sequential' ? 'block' : 'none';
+}
+
+function onStartPosChange(val) {
+  const deck = getDeck(currentDeckId);
+  if (!deck || deck.cards === null) return;
+  const cards = studyPendingMode === 'review'
+    ? deck.cards.filter(c => !c.learned)
+    : deck.cards;
+  const max = cards.length;
+  const n = Math.max(1, Math.min(parseInt(val, 10) || 1, max));
+  document.getElementById('studyStartPos').value = n;
+  updateStartPosPreview(cards, n);
+}
+
+function updateStartPosPreview(cards, n) {
+  const preview = document.getElementById('startPosPreview');
+  if (!preview) return;
+  const card = cards[n - 1];
+  if (card) {
+    preview.textContent = `${n} 枚目：${card.front}`;
+  } else {
+    preview.textContent = '';
+  }
+}
+
+function startStudyFromModal() {
+  const order = studyOrderMode;
+  const startPos = order === 'sequential'
+    ? (parseInt(document.getElementById('studyStartPos').value, 10) || 1)
+    : 1;
+  closeStudyStartModal();
+  startStudy(studyPendingMode, order, startPos);
+}
+
 function shuffle(arr) {
   for (let i = arr.length-1; i>0; i--) {
     const j = Math.floor(Math.random()*(i+1));
@@ -1299,7 +1424,7 @@ function shuffle(arr) {
   return arr;
 }
 
-async function startStudy(mode='all') {
+async function startStudy(mode='all', orderMode=null, startPos=1) {
   const deck = getDeck(currentDeckId);
   // カードが未読み込みの場合は先に取得する（通常はdeck詳細ページで既に取得済み）
   if (deck.cards === null) {
@@ -1309,9 +1434,19 @@ async function startStudy(mode='all') {
   currentStudyMode = mode;
   let cards = mode === 'review' ? deck.cards.filter(c => !c.learned) : deck.cards;
   if (!cards.length) { showToast('🎉 すべて覚えました！'); return; }
-  studyCards = shuffle([...cards]);
+
+  const order = orderMode || studyOrderMode;
+  if (order === 'sequential') {
+    // 順番通り：startPos 枚目から開始し、末尾まで進んだら先頭に折り返す
+    const start = Math.max(0, Math.min(startPos - 1, cards.length - 1));
+    studyCards = [...cards.slice(start), ...cards.slice(0, start)];
+  } else {
+    studyCards = shuffle([...cards]);
+  }
   studyIndex = 0; studyOk = 0; studyNg = 0;
-  document.getElementById('headerTitle').textContent = mode === 'review' ? '📖 復習中' : '▶ 学習中';
+  const orderLabel = (orderMode || studyOrderMode) === 'sequential' ? '📋' : '🔀';
+  document.getElementById('headerTitle').textContent =
+    (mode === 'review' ? '📖 復習中' : '▶ 学習中') + ' ' + orderLabel;
   document.getElementById('studyResult').style.display   = 'none';
   document.getElementById('flipContainer').style.display = 'block';
   document.querySelector('.answer-btns').style.display   = 'flex';
