@@ -925,16 +925,65 @@ function saveConfigModal() {
 //  Firestore Sync
 // ══════════════════════════════════════════
 function parseDeckDocs(docs) {
+  // メタデータのみ返す。cards は null（未読み込み）
   return docs.map(doc => {
     const d = doc.data();
     return {
       id: doc.id, name: d.name, icon: d.icon || '📚',
-      cards: (d.cards || []).map(c => ({
-        id: c.id, front: c.front, back: c.back,
-        learned: c.learned || false, correct: c.correct || 0, incorrect: c.incorrect || 0
-      }))
+      cardCount: d.cardCount || 0,
+      learnedCount: d.learnedCount || 0,
+      cards: null   // lazy load — fetchDeckCards() で取得
     };
   });
+}
+
+function parseCardDocs(rawCards) {
+  return (rawCards || []).map(c => ({
+    id: c.id, front: c.front, back: c.back,
+    learned: c.learned || false, correct: c.correct || 0, incorrect: c.incorrect || 0
+  }));
+}
+
+// デッキのカードを遅延読み込みする
+async function fetchDeckCards(deckId) {
+  const deck = getDeck(deckId);
+  if (!deck) return false;
+  if (deck.cards !== null) return true; // 既に読み込み済み
+
+  try {
+    // 新構造: /users/{uid}/decksData/{deckId}
+    const dataRef = fbStore.doc(`users/${userId}/decksData/${deckId}`);
+    let snap;
+    try {
+      snap = await dataRef.get({ source: 'server' });
+    } catch(e) {
+      snap = await dataRef.get(); // フォールバック（キャッシュ）
+    }
+    if (snap.exists) {
+      deck.cards = parseCardDocs(snap.data().cards);
+      return true;
+    }
+    // 旧構造フォールバック: /users/{uid}/decks/{deckId} に cards が埋め込まれている場合
+    const deckRef = fbStore.doc(`users/${userId}/decks/${deckId}`);
+    let deckSnap;
+    try {
+      deckSnap = await deckRef.get({ source: 'server' });
+    } catch(e) {
+      deckSnap = await deckRef.get();
+    }
+    if (deckSnap.exists && deckSnap.data().cards) {
+      deck.cards = parseCardDocs(deckSnap.data().cards);
+      // 新構造に自動移行（バックグラウンドで保存）
+      saveDeckToFirestore(deckId).catch(()=>{});
+      return true;
+    }
+    deck.cards = [];
+    return true;
+  } catch(e) {
+    console.error('[FC] fetchDeckCards failed:', e);
+    deck.cards = [];
+    return true;
+  }
 }
 
 async function subscribeDecks() {
@@ -945,12 +994,12 @@ async function subscribeDecks() {
   if (disp) disp.textContent = userId;
   setSyncing(true);
 
+  // メタデータのみを購読（cards は含まない）
   const col = fbStore.collection(`users/${userId}/decks`).orderBy('createdAt', 'asc');
 
-  // ── Step1: サーバーから読み取り（フォールバック付き）──
+  // ── Step1: サーバーからメタデータを読み取り（フォールバック付き）──
   let initialLoaded = false;
   try {
-    // まずサーバーから直接取得を試みる
     const snap = await col.get({ source: 'server' });
     db_local.decks = parseDeckDocs(snap.docs);
     initialLoaded = true;
@@ -964,41 +1013,47 @@ async function subscribeDecks() {
       setSyncing(false); hideLoading();
       showFirestoreSetupError(e); return;
     }
-    // サーバー取得失敗 → 通常のget()にフォールバック（キャッシュ含む）
     try {
       const snap = await col.get();
       db_local.decks = parseDeckDocs(snap.docs);
       initialLoaded = true;
-      const fromCache = snap.metadata.fromCache;
-      if (fromCache) {
-        showToast('⚠️ オフラインデータを表示中（サーバーに接続できません）');
-      }
+      if (snap.metadata.fromCache) showToast('⚠️ オフラインデータを表示中（サーバーに接続できません）');
     } catch(e2) {
       console.error('[FC] Fallback fetch also failed:', e2.code, e2.message);
-      if (e2.code === 'permission-denied') {
-        setSyncing(false); hideLoading();
-        showFirestorePermissionError(); return;
-      }
-      // エラーコード別に分かりやすいメッセージを表示
+      if (e2.code === 'permission-denied') { setSyncing(false); hideLoading(); showFirestorePermissionError(); return; }
       setSyncing(false); hideLoading();
-      showFirestoreSetupError(e2);
-      return;
+      showFirestoreSetupError(e2); return;
     }
   }
 
-  if (initialLoaded) {
-    renderDeckGrid();
-    if (currentDeckId && document.getElementById('deckPage').classList.contains('active')) renderDeckDetail();
-  }
+  if (initialLoaded) renderDeckGrid();
   setSyncing(false);
   hideLoading();
   if (!document.querySelector('.page.active:not(#setupPage)')) showPage('deckListPage');
 
-  // ── Step2: リアルタイム更新を onSnapshot で受け取る ──
+  // ── Step2: メタデータのリアルタイム更新（差分更新でカードキャッシュを保持）──
   unsubDecks = col.onSnapshot(snapshot => {
-    // サーバー由来の更新のみ反映（キャッシュ由来はStep1で取得済み）
     if (snapshot.metadata.fromCache && initialLoaded) return;
-    db_local.decks = parseDeckDocs(snapshot.docs);
+    snapshot.docChanges().forEach(change => {
+      const docId = change.doc.id;
+      const d = change.doc.data();
+      if (change.type === 'removed') {
+        db_local.decks = db_local.decks.filter(dk => dk.id !== docId);
+      } else if (change.type === 'added') {
+        if (!db_local.decks.find(dk => dk.id === docId)) {
+          db_local.decks.push({ id: docId, name: d.name, icon: d.icon || '📚',
+            cardCount: d.cardCount || 0, learnedCount: d.learnedCount || 0, cards: null });
+        }
+      } else if (change.type === 'modified') {
+        const deck = db_local.decks.find(dk => dk.id === docId);
+        if (deck) {
+          deck.name = d.name; deck.icon = d.icon || '📚';
+          deck.cardCount = d.cardCount || 0; deck.learnedCount = d.learnedCount || 0;
+          // 現在開いていないデッキのカードキャッシュを無効化（他デバイス更新に対応）
+          if (docId !== currentDeckId) deck.cards = null;
+        }
+      }
+    });
     renderDeckGrid();
     if (currentDeckId && document.getElementById('deckPage').classList.contains('active')) renderDeckDetail();
   }, err => {
@@ -1062,18 +1117,31 @@ async function saveDeckToFirestore(deckId) {
   if (!deck) return;
   setSyncing(true);
   try {
-    await fbStore.collection(`users/${userId}/decks`).doc(deckId).set({
-      name: deck.name, icon: deck.icon, cards: deck.cards,
+    const cards = deck.cards || [];
+    const learnedCount = cards.filter(c => c.learned).length;
+    // メタデータのみ /decks/ に保存
+    await fbStore.doc(`users/${userId}/decks/${deckId}`).set({
+      name: deck.name, icon: deck.icon,
+      cardCount: cards.length, learnedCount,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
+    // カードデータは /decksData/ に保存
+    await fbStore.doc(`users/${userId}/decksData/${deckId}`).set({
+      cards,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    // メモリ上のメタデータも更新
+    deck.cardCount = cards.length;
+    deck.learnedCount = learnedCount;
   } catch(e) { console.error(e); showToast('保存エラーが発生しました'); }
   setSyncing(false);
 }
 
 async function deleteDeckFromFirestore(deckId) {
   try {
-    await fbStore.collection(`users/${userId}/decks`).doc(deckId).delete();
+    await fbStore.doc(`users/${userId}/decks/${deckId}`).delete();
+    await fbStore.doc(`users/${userId}/decksData/${deckId}`).delete().catch(()=>{});
   } catch(e) { console.error(e); showToast('削除エラーが発生しました'); }
 }
 
@@ -1101,13 +1169,25 @@ function showDeckListPage() {
   showPage('deckListPage');
 }
 
-function showDeckPage(deckId) {
+async function showDeckPage(deckId) {
   currentDeckId = deckId;
   const deck = getDeck(deckId);
   if (!deck) { showDeckListPage(); return; }
   document.getElementById('headerTitle').textContent = deck.icon + ' ' + deck.name;
-  renderDeckDetail();
   showPage('deckPage');
+
+  if (deck.cards === null) {
+    // カード未読み込み → ローディング表示してから取得
+    document.getElementById('deckDetailHeader').innerHTML =
+      `<div style="text-align:center;padding:30px;color:var(--sub);">
+         <div style="font-size:2rem;margin-bottom:8px;">⏳</div>
+         <div>カードを読み込み中...</div>
+       </div>`;
+    document.getElementById('cardList').innerHTML = '';
+    document.getElementById('cardEmpty').style.display = 'none';
+    await fetchDeckCards(deckId);
+  }
+  renderDeckDetail();
 }
 
 // ══════════════════════════════════════════
@@ -1122,8 +1202,9 @@ function renderDeckGrid() {
   if (!db_local.decks.length) { empty.style.display = 'block'; return; }
   empty.style.display = 'none';
   db_local.decks.forEach(deck => {
-    const total   = deck.cards.length;
-    const learned = deck.cards.filter(c => c.learned).length;
+    // cards が読み込み済みならそこから、未読み込みならメタデータの値を使う
+    const total   = deck.cards !== null ? deck.cards.length   : (deck.cardCount   || 0);
+    const learned = deck.cards !== null ? deck.cards.filter(c => c.learned).length : (deck.learnedCount || 0);
     const pct     = total ? Math.round(learned / total * 100) : 0;
     const el = document.createElement('div');
     el.className = 'deck-card';
@@ -1148,6 +1229,7 @@ function renderDeckGrid() {
 function renderDeckDetail() {
   const deck = getDeck(currentDeckId);
   if (!deck) return;
+  if (deck.cards === null) return; // fetchDeckCards 待ち中はスキップ
   const total        = deck.cards.length;
   const learnedCount = deck.cards.filter(c => c.learned).length;
   const unlearnedCount = total - learnedCount;
@@ -1217,8 +1299,13 @@ function shuffle(arr) {
   return arr;
 }
 
-function startStudy(mode='all') {
+async function startStudy(mode='all') {
   const deck = getDeck(currentDeckId);
+  // カードが未読み込みの場合は先に取得する（通常はdeck詳細ページで既に取得済み）
+  if (deck.cards === null) {
+    showToast('⏳ カードを読み込み中...');
+    await fetchDeckCards(currentDeckId);
+  }
   currentStudyMode = mode;
   let cards = mode === 'review' ? deck.cards.filter(c => !c.learned) : deck.cards;
   if (!cards.length) { showToast('🎉 すべて覚えました！'); return; }
@@ -1459,7 +1546,7 @@ async function saveDeckModal() {
     await saveDeckToFirestore(editDeckId);
   } else {
     const id = genId();
-    const newDeck = { id, name, icon: selectedEmoji, cards: [] };
+    const newDeck = { id, name, icon: selectedEmoji, cards: [], cardCount: 0, learnedCount: 0 };
     db_local.decks.push(newDeck);
     await saveDeckToFirestore(id);
   }
@@ -1619,6 +1706,7 @@ function showCsvPreview() {
 async function importCsvCards() {
   if (!parsedCsvCards.length) return;
   const deck = getDeck(currentDeckId);
+  if (deck.cards === null) await fetchDeckCards(currentDeckId);
   const mode = document.querySelector('input[name="importMode"]:checked').value;
   const newCards = parsedCsvCards.map(c=>({id:genId(),front:c.front,back:c.back,correct:c.correct||0,incorrect:c.incorrect||0,learned:c.learned||false}));
   deck.cards = mode==='replace' ? newCards : [...deck.cards, ...newCards];
@@ -1636,9 +1724,13 @@ function downloadSampleCsv() {
 }
 
 // ── CSV Export ──
-function exportDeckCsv() {
+async function exportDeckCsv() {
   const deck = getDeck(currentDeckId);
   if (!deck) return;
+  if (deck.cards === null) {
+    showToast('⏳ カードを読み込み中...');
+    await fetchDeckCards(currentDeckId);
+  }
   const rows = [['表（問題）', '裏（答え）', '正解回数', '不正解回数', '覚えた']];
   deck.cards.forEach(c => {
     const front = String(c.front).replace(/"/g, '""');
@@ -1728,7 +1820,7 @@ async function createDeckFromCsv() {
   if (!ndcParsedCards.length) { showToast('CSVファイルを選択してください'); return; }
   const id = genId();
   const cards = ndcParsedCards.map(c => ({id: genId(), front: c.front, back: c.back, correct:c.correct||0, incorrect:c.incorrect||0, learned:c.learned||false}));
-  const newDeck = { id, name, icon: ndcSelectedEmoji, cards };
+  const newDeck = { id, name, icon: ndcSelectedEmoji, cards, cardCount: cards.length, learnedCount: 0 };
   db_local.decks.push(newDeck);
   closeNewDeckCsvModal();
   renderDeckGrid();
